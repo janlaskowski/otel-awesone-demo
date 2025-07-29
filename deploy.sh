@@ -233,13 +233,178 @@ deploy_otel_demo() {
 configure_multi_backend_tracing() {
     print_status "Configuring OTEL Collector to send traces to both Jaeger and Zipkin..."
     
-    # Patch the OTEL Collector configuration to add Zipkin exporter
-    kubectl patch configmap otel-collector -n $OTEL_NAMESPACE --type='strategic' -p='
-{
-  "data": {
-    "relay": "connectors:\n  spanmetrics: {}\nexporters:\n  debug: {}\n  opensearch:\n    http:\n      endpoint: http://opensearch:9200\n      tls:\n        insecure: true\n    logs_index: otel\n  otlp:\n    endpoint: jaeger-collector:4317\n    tls:\n      insecure: true\n  zipkin:\n    endpoint: http://zipkin.'$ZIPKIN_NAMESPACE'.svc.cluster.local:9411/api/v2/spans\n  otlphttp/prometheus:\n    endpoint: http://prometheus:9090/api/v1/otlp\n    tls:\n      insecure: true\nextensions:\n  health_check:\n    endpoint: \${env:MY_POD_IP}:13133\nprocessors:\n  batch: {}\n  k8sattributes:\n    extract:\n      metadata:\n      - k8s.namespace.name\n      - k8s.deployment.name\n      - k8s.statefulset.name\n      - k8s.daemonset.name\n      - k8s.cronjob.name\n      - k8s.job.name\n      - k8s.node.name\n      - k8s.pod.name\n      - k8s.pod.uid\n      - k8s.pod.start_time\n    passthrough: false\n    pod_association:\n    - sources:\n      - from: resource_attribute\n        name: k8s.pod.ip\n    - sources:\n      - from: resource_attribute\n        name: k8s.pod.uid\n    - sources:\n      - from: connection\n  memory_limiter:\n    check_interval: 5s\n    limit_percentage: 80\n    spike_limit_percentage: 25\n  resource:\n    attributes:\n    - action: insert\n      from_attribute: k8s.pod.uid\n      key: service.instance.id\n  transform:\n    error_mode: ignore\n    trace_statements:\n    - context: span\n      statements:\n      - replace_pattern(name, \"\\\\?.*\", \"\")\n      - replace_match(name, \"GET /api/products/*\", \"GET /api/products/{productId}\")\nreceivers:\n  httpcheck/frontend-proxy:\n    targets:\n    - endpoint: http://frontend-proxy:8080\n  jaeger:\n    protocols:\n      grpc:\n        endpoint: \${env:MY_POD_IP}:14250\n      thrift_compact:\n        endpoint: \${env:MY_POD_IP}:6831\n      thrift_http:\n        endpoint: \${env:MY_POD_IP}:14268\n  otlp:\n    protocols:\n      grpc:\n        endpoint: \${env:MY_POD_IP}:4317\n      http:\n        cors:\n          allowed_origins:\n          - http://*\n          - https://*\n        endpoint: \${env:MY_POD_IP}:4318\n  prometheus:\n    config:\n      scrape_configs:\n      - job_name: opentelemetry-collector\n        scrape_interval: 10s\n        static_configs:\n        - targets:\n          - \${env:MY_POD_IP}:8888\n  redis:\n    collection_interval: 10s\n    endpoint: valkey-cart:6379\n  zipkin:\n    endpoint: \${env:MY_POD_IP}:9411\nservice:\n  extensions:\n  - health_check\n  pipelines:\n    logs:\n      exporters:\n      - opensearch\n      - debug\n      processors:\n      - k8sattributes\n      - memory_limiter\n      - resource\n      - batch\n      receivers:\n      - otlp\n    metrics:\n      exporters:\n      - otlphttp/prometheus\n      - debug\n      processors:\n      - k8sattributes\n      - memory_limiter\n      - resource\n      - batch\n      receivers:\n      - httpcheck/frontend-proxy\n      - redis\n      - otlp\n      - spanmetrics\n    traces:\n      exporters:\n      - otlp\n      - zipkin\n      - debug\n      - spanmetrics\n      processors:\n      - k8sattributes\n      - memory_limiter\n      - resource\n      - transform\n      - batch\n      receivers:\n      - otlp\n      - jaeger\n      - zipkin\n  telemetry:\n    metrics:\n      address: \${env:MY_POD_IP}:8888\n      level: detailed\n      readers:\n      - periodic:\n          exporter:\n            otlp:\n              endpoint: otel-collector:4318\n              protocol: grpc\n          interval: 10000\n          timeout: 5000"
-  }
-}'
+    # Create a temporary configuration file with proper escaping
+    cat > /tmp/otel-collector-config.yaml << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  namespace: otel-demo
+data:
+  relay: |
+    connectors:
+      spanmetrics: {}
+    exporters:
+      debug: {}
+      opensearch:
+        http:
+          endpoint: http://opensearch:9200
+          tls:
+            insecure: true
+        logs_index: otel
+      otlp:
+        endpoint: jaeger-collector:4317
+        tls:
+          insecure: true
+      zipkin:
+        endpoint: http://zipkin.zipkin.svc.cluster.local:9411/api/v2/spans
+      otlphttp/prometheus:
+        endpoint: http://prometheus:9090/api/v1/otlp
+        tls:
+          insecure: true
+    extensions:
+      health_check:
+        endpoint: ${env:MY_POD_IP}:13133
+    processors:
+      batch: {}
+      k8sattributes:
+        extract:
+          metadata:
+          - k8s.namespace.name
+          - k8s.deployment.name
+          - k8s.statefulset.name
+          - k8s.daemonset.name
+          - k8s.cronjob.name
+          - k8s.job.name
+          - k8s.node.name
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.pod.start_time
+        passthrough: false
+        pod_association:
+        - sources:
+          - from: resource_attribute
+            name: k8s.pod.ip
+        - sources:
+          - from: resource_attribute
+            name: k8s.pod.uid
+        - sources:
+          - from: connection
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      resource:
+        attributes:
+        - action: insert
+          from_attribute: k8s.pod.uid
+          key: service.instance.id
+      transform:
+        error_mode: ignore
+        trace_statements:
+        - context: span
+          statements:
+          - replace_pattern(name, "\\?.*", "")
+          - replace_match(name, "GET /api/products/*", "GET /api/products/{productId}")
+    receivers:
+      httpcheck/frontend-proxy:
+        targets:
+        - endpoint: http://frontend-proxy:8080
+      jaeger:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:14250
+          thrift_compact:
+            endpoint: ${env:MY_POD_IP}:6831
+          thrift_http:
+            endpoint: ${env:MY_POD_IP}:14268
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+          http:
+            cors:
+              allowed_origins:
+              - http://*
+              - https://*
+            endpoint: ${env:MY_POD_IP}:4318
+      prometheus:
+        config:
+          scrape_configs:
+          - job_name: opentelemetry-collector
+            scrape_interval: 10s
+            static_configs:
+            - targets:
+              - ${env:MY_POD_IP}:8888
+      redis:
+        collection_interval: 10s
+        endpoint: valkey-cart:6379
+      zipkin:
+        endpoint: ${env:MY_POD_IP}:9411
+    service:
+      extensions:
+      - health_check
+      pipelines:
+        logs:
+          exporters:
+          - opensearch
+          - debug
+          processors:
+          - k8sattributes
+          - memory_limiter
+          - resource
+          - batch
+          receivers:
+          - otlp
+        metrics:
+          exporters:
+          - otlphttp/prometheus
+          - debug
+          processors:
+          - k8sattributes
+          - memory_limiter
+          - resource
+          - batch
+          receivers:
+          - httpcheck/frontend-proxy
+          - redis
+          - otlp
+          - spanmetrics
+        traces:
+          exporters:
+          - otlp
+          - zipkin
+          - debug
+          - spanmetrics
+          processors:
+          - k8sattributes
+          - memory_limiter
+          - resource
+          - transform
+          - batch
+          receivers:
+          - otlp
+          - jaeger
+          - zipkin
+      telemetry:
+        metrics:
+          address: ${env:MY_POD_IP}:8888
+          level: detailed
+          readers:
+          - periodic:
+              exporter:
+                otlp:
+                  endpoint: otel-collector:4318
+                  protocol: grpc
+              interval: 10000
+              timeout: 5000
+EOF
+    
+    # Apply the configuration
+    kubectl apply -f /tmp/otel-collector-config.yaml
+    
+    # Clean up the temporary file
+    rm -f /tmp/otel-collector-config.yaml
     
     # Restart the OTEL Collector to apply the new configuration
     kubectl rollout restart deployment/otel-collector -n $OTEL_NAMESPACE
